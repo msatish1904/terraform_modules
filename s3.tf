@@ -1,192 +1,124 @@
-resource "aws_s3_bucket" "s3" {
-  for_each  = var.s3_config
-  bucket    = each.key
-
-  #Ensure a lifecycle configuration is applied
-  lifecycle_rule {
-    id      = "log_expiration"
-    enabled = true
-
-    transition {
-      days          = 30
-      storage_class = "GLACIER"
-    }
-
-    expiration {
-      days = 365
-    }
-  }
-
-  replication_configuration {
-    role = aws_iam_role.replication.arn
-
-    rules {
-      id     = "foobar"
-      prefix = "foo"
-      status = "Enabled"
-
-      destination {
-        bucket        = var.bucket 
-        storage_class = "STANDARD"
-      }
-    }
-  }
-
-
-
-  tags      = merge({ "Name" = each.key }, var.tags)
+resource "aws_s3_bucket" "s3" { 
+  bucket        = var.bucket_name
+  tags          = var.tags 
 }
 
+resource "aws_s3_bucket_versioning" "s3" {
+  count  = var.enable_versioning ? 1 : 0
+  bucket = aws_s3_bucket.s3.id
 
- 
-
-resource "aws_s3_bucket_public_access_block" "bucket_public_policy" {
-  for_each  = var.s3_config
-  bucket = aws_s3_bucket.s3[each.key].id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_versioning" "bucket_versioning" {
-  for_each  = var.s3_config
-  bucket = aws_s3_bucket.s3[each.key].id
   versioning_configuration {
+    status = "Enabled" 
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "buckets" {
+  bucket = aws_s3_bucket.s3.id
+  rule {
+    abort_incomplete_multipart_upload {
+      days_after_initiation = var.days_after_initiation
+    }
+    id     = "Abort incomplete Multipart Uploads after 7 days"
+    status = "Enabled"
+  }
+
+  rule {
+    id = "expire objects"
+    noncurrent_version_expiration {
+      noncurrent_days = 45
+    }
+    expiration {
+      expired_object_delete_marker = true
+    }
     status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_policy" "policy" {
- for_each  = var.s3_config
- bucket = aws_s3_bucket.s3[each.key].id
- policy = each.value.bucket_policy
+resource "aws_s3_bucket_logging" "logging" {
+  count          = var.enable_logging ? 1 : 0
+  bucket         = aws_s3_bucket.s3.id
+  target_bucket  = var.enable_logging ? var.logging_target_bucket : null
+  target_prefix  = var.enable_logging ? var.logging_target_prefix : null 
 }
 
-resource "aws_s3_bucket_logging" "example" {
-  for_each       = var.s3_config
-  bucket         = aws_s3_bucket.s3[each.key].id
-  target_bucket  = aws_s3_bucket.log_bucket.id
-  target_prefix  = "log/"
+resource "aws_s3_bucket_public_access_block" "bucket_public_policy" {
+  bucket                  = aws_s3_bucket.s3.id
+  block_public_acls       = var.block_public_acls 
+  block_public_policy     = var.block_public_policy 
+  ignore_public_acls      = var.ignore_public_acls 
+  restrict_public_buckets = var.restrict_public_buckets 
 }
 
 
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "bucket_encryption_config" {
-  for_each  = var.s3_config
-  bucket = aws_s3_bucket.s3[each.key].id
+  bucket = aws_s3_bucket.s3.id
 
   rule {
     apply_server_side_encryption_by_default {
-      kms_master_key_id = aws_kms_key.mykey.arn
-      sse_algorithm     = "aws:kms"
-      #sse_algorithm = "AES256"
+      sse_algorithm = var.kms_key_arn != "" ? "aws:kms" : "AES256"
+      kms_master_key_id = var.kms_key_arn != "" ? var.kms_key_arn : null
     }
   }
 }
 
+resource "aws_s3_bucket_replication_configuration" "replication" {
+  count      = var.enable_replication ? 1 : 0
+  depends_on = [aws_s3_bucket_versioning.s3]  // Makes sure that replication doesn't start until versioning is enabled on the source bucket
 
+  role   = var.enable_replication ? aws_iam_role.replication[0].arn : null
+  bucket = aws_s3_bucket.s3.id
 
+  rule {
+    status = "Enabled"
 
-resource "aws_kms_key" "mykey" {
-  description             = "Your KMS Key Description"
-  deletion_window_in_days = 10
-  enable_key_rotation = true
-}
-
-resource "aws_kms_key_policy" "s3_kms_key" {
-    key_id = aws_kms_key.mykey.id
-    policy = jsonencode(
-{
-  "Version": "2012-10-17",
-  "Id": "key-default-1",
-  "Statement": [
-    {
-      "Sid": "Enable IAM User Permissions",
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::471112942117:root"
-      },
-      "Action": "kms:*",
-      "Resource": "*"
-    },
-    {
-      "Sid": "Allow access for key administrators",
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::471112942117:user/admin-username"
-      },
-      "Action": [
-        "kms:Create*",
-        "kms:Describe*",
-        "kms:Enable*",
-        "kms:List*",
-        "kms:Put*",
-        "kms:Update*",
-        "kms:Revoke*",
-        "kms:Disable*",
-        "kms:Get*",
-        "kms:Delete*",
-        "kms:TagResource",
-        "kms:UntagResource",
-        "kms:ScheduleKeyDeletion",
-        "kms:CancelKeyDeletion"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "Allow use of the key",
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::471112942117:user/user1@example.com"
-      },
-      "Action": [
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:ReEncrypt*",
-        "kms:GenerateDataKey*",
-        "kms:DescribeKey"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "Allow attachment of persistent resources",
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::471112942117:user/user2@example.com"
-      },
-      "Action": [
-        "kms:CreateGrant",
-        "kms:ListGrants",
-        "kms:RevokeGrant"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "Bool": {
-          "kms:GrantIsForAWSResource": "true"
-        }
-      }
+    destination {
+      bucket        = var.destination_bucket
+      storage_class = "STANDARD"
     }
-  ]
-})
+  }
 }
 
-
-# resource "aws_sns_topic" "topic" {
-#   for_each = var.s3_config
-#   name   = "s3-event-notification-topic"
-#   policy = data.aws_iam_policy_document.topic[each.key].json
-#   kms_master_key_id = "alias/aws/sns"
-# }
-
+resource "aws_sns_topic" "sns_topic" { 
+  count                       = var.create_sns_topic ? 1 : 0
+  name                        = var.sns_topic_name
+  kms_master_key_id           = var.kms_key_arn
+  tags                        = var.tags
+}
 
 resource "aws_s3_bucket_notification" "bucket_notification" {
-  for_each = var.s3_config
-  bucket = aws_s3_bucket.s3[each.key].id
- 
-  lambda_function {
-    lambda_function_arn = var.lambda_function_arn
-    events             = ["s3:ObjectCreated:*"]
+  count  = var.enable_bucket_notification  ? 1 : 0
+  bucket = aws_s3_bucket.s3.id
+
+  dynamic "topic" {
+    for_each = var.enable_bucket_notification && var.create_sns_topic ? [1] : []
+
+    content {
+      topic_arn = aws_sns_topic.sns_topic[0].arn
+      events    = ["s3:ObjectCreated:*"]
+      filter_prefix = ".log"
+    }
   }
 }
+
+resource "aws_sns_topic_policy" "policy" {
+  count = var.create_sns_topic ? 1 : 0
+
+  arn    = aws_sns_topic.sns_topic[0].arn
+  policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [{
+      Sid       = "AllowS3ToPublish",
+      Effect    = "Allow",
+      Principal = "*",
+      Action    = "sns:Publish",
+      Resource  = aws_sns_topic.sns_topic[0].arn,
+      Condition = {
+        ArnLike = {
+          "aws:SourceArn" = aws_s3_bucket.s3.arn
+        }
+      }
+    }]
+  })
+}
+

@@ -13,16 +13,14 @@ variable "s3_config" {
   
 }
 
-
-variable "tags" {
-  description = "Any tags that should be present on the resources"
-  type        = map(string)
-  default     = {}
+variable "iam_role_path" {
+  description = "Path to the role"
+  type        = string
+  default     = "/"
 }
 
-/*
-variable "restrict_public_buckets" {
-  description = "to block public access to the bucket or not"
-  type = bool
-  default = false
+variable "aws_managed_policy" {
+  description = "The ARN of the policy we want to apply"
+  type        = list(string)
+  default     = [""]
 }
